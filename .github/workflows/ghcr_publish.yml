@@ -1,0 +1,159 @@
+# Publish bencher to GHCR
+#
+# Upstream's docker_build.yml builds and tests the image but its "Build and push" step is
+# commented out, so Docker Hub's `latest` is whatever was last pushed by hand (2026-07-20,
+# one day before `feature/configurable_host` was merged). That is why the public image has
+# no unix-socket support. This workflow publishes a build of *this* branch instead.
+#
+# Triggered by pushes to this branch, which exists only to publish images -- so a push here
+# is already a deliberate act. It is deliberately *not* wired to main: that would rebuild on
+# every upstream merge, and `workflow_dispatch` alone is not an option because GitHub only
+# offers that trigger for workflows present on the default branch.
+
+name: Publish bencher to GHCR
+
+on:
+  push:
+    branches:
+      - image-build-ghcr
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (in addition to the commit SHA)"
+        required: false
+        default: "uds"
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/bencher
+  SERVICE_PY: /opt/bencher/LassoBenchmarks/.venv/bin/python
+  # `inputs` is empty on a push trigger, so fall back to the same default.
+  TAG: ${{ inputs.tag || 'uds' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # The image is ~10 GB across both build stages and a stock runner has ~14 GB free,
+      # so reclaim the preinstalled toolchains first. Same approach as upstream's workflow.
+      - name: Free up disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo docker builder prune -a -f
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed straight to the registry rather than `load`ed into the local daemon first:
+      # loading writes a second full copy to the runner's disk, which is the scarce resource
+      # here. The verification steps below pull the image back instead.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The whole point of this rebuild is unix-socket support, so verify it here rather
+      # than discovering it on the cluster. Every service is pointed at a socket in a
+      # bind-mounted directory; if the sockets appear and gRPC reports the channel ready,
+      # then bind() *and* listen() both happened and the router is genuinely accepting.
+      - name: Smoke test unix sockets
+        run: |
+          set -euo pipefail
+          mkdir -p "$PWD/sockets" && chmod 777 "$PWD/sockets"
+
+          docker run -d --name bencher \
+            -v "$PWD/sockets:/sockets" \
+            -e BENCHER_SERVER_HOST=unix:/sockets/server.sock \
+            -e BENCHER_LASSO_HOST=unix:/sockets/lasso.sock \
+            -e BENCHER_NODEP_HOST=unix:/sockets/nodep.sock \
+            -e BENCHER_MAXSAT_HOST=unix:/sockets/maxsat.sock \
+            -e BENCHER_EBO_HOST=unix:/sockets/ebo.sock \
+            -e BENCHER_MUJOCO_HOST=unix:/sockets/mujoco.sock \
+            -e BENCHER_SVM_HOST=unix:/sockets/svm.sock \
+            -e BENCHER_IOH_HOST=unix:/sockets/ioh.sock \
+            -e BENCHER_BO4MOB_HOST=unix:/sockets/bo4mob.sock \
+            "${IMAGE}:sha-${{ github.sha }}"
+
+          echo "Waiting for all nine sockets to appear..."
+          for _ in $(seq 1 180); do
+            n=$(ls "$PWD/sockets"/*.sock 2>/dev/null | wc -l)
+            [ "$n" -eq 9 ] && break
+            sleep 5
+          done
+
+          ls -la "$PWD/sockets" || true
+          n=$(ls "$PWD/sockets"/*.sock 2>/dev/null | wc -l)
+          if [ "$n" -ne 9 ]; then
+            echo "::error::only $n/9 sockets appeared"
+            docker logs bencher | tail -80
+            exit 1
+          fi
+
+          echo "Checking the router actually accepts connections..."
+          docker exec bencher "$SERVICE_PY" -c "import grpc; grpc.channel_ready_future(grpc.insecure_channel('unix:/sockets/server.sock')).result(timeout=60); print('router accepting on unix:/sockets/server.sock')"
+
+          docker rm -f bencher
+
+      # Guards against the failure mode that motivated the rebuild: an image that looks new
+      # but carries the old scaffold, which would silently fall back to TCP.
+      - name: Verify image contents
+        run: |
+          set -euo pipefail
+          IMG="${IMAGE}:sha-${{ github.sha }}"
+
+          echo "--- bencherscaffold version (want >= 0.5.2, current cluster image is 0.4.5) ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'ls /opt/bencher/LassoBenchmarks/.venv/lib/python*/site-packages/ | grep -i scaffold'
+
+          echo "--- grpc_target present (the unix: handler) ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'grep -q "def grpc_target" /opt/bencher/LassoBenchmarks/.venv/lib/python*/site-packages/bencherscaffold/dual_stack_service.py && echo present'
+
+          echo "--- services accept a listen host ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'grep -q add_listen_argument /opt/bencher/LassoBenchmarks/src/lassobenchmarks/main.py && echo present'
+
+          echo "--- lunarlander sign (want value=-total_reward) ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'grep -n "total_reward" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/main.py'
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo '```'
+            echo "${IMAGE}:${{ env.TAG }}"
+            echo "${IMAGE}:sha-${{ github.sha }}"
+            echo '```'
+            echo ""
+            echo "Pull on the cluster with:"
+            echo ""
+            echo '```'
+            echo "singularity pull images/bencher_uds.sif docker://${IMAGE}:${{ env.TAG }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
