@@ -100,13 +100,15 @@ jobs:
 
           echo "Waiting for all nine sockets to appear..."
           for _ in $(seq 1 180); do
-            n=$(ls "$PWD/sockets"/*.sock 2>/dev/null | wc -l)
+            n=$(find "$PWD/sockets" -type s -name '*.sock' | wc -l)
             [ "$n" -eq 9 ] && break
             sleep 5
           done
 
           ls -la "$PWD/sockets" || true
-          n=$(ls "$PWD/sockets"/*.sock 2>/dev/null | wc -l)
+          # `find`, not `ls | wc -l`: with pipefail an unmatched glob makes ls exit 2 and
+          # takes the whole step down with it -- losing exactly the logs we need to see.
+          n=$(find "$PWD/sockets" -type s -name '*.sock' | wc -l)
           if [ "$n" -ne 9 ]; then
             echo "::error::only $n/9 sockets appeared"
             docker logs bencher | tail -80
