@@ -21,13 +21,15 @@ on:
       tag:
         description: "Tag to publish (in addition to the commit SHA)"
         required: false
-        default: "uds"
+        default: "seeded"
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/bencher
   SERVICE_PY: /opt/bencher/LassoBenchmarks/.venv/bin/python
-  # `inputs` is empty on a push trigger, so fall back to the same default.
-  TAG: ${{ inputs.tag || 'uds' }}
+  # `inputs` is empty on a push trigger, so fall back to the same default. Moving tags
+  # are never repointed: `uds` still names the image every result before 2026-08-14 was
+  # produced with, and this build gets its own name.
+  TAG: ${{ inputs.tag || 'seeded' }}
 
 jobs:
   publish:
@@ -139,9 +141,30 @@ jobs:
           docker run --rm --entrypoint bash "$IMG" -c \
             'grep -q add_listen_argument /opt/bencher/LassoBenchmarks/src/lassobenchmarks/main.py && echo present'
 
-          echo "--- lunarlander sign (want value=-total_reward) ---"
+          echo "--- lunarlander sign (want value=-float(np.mean(rewards))) ---"
           docker run --rm --entrypoint bash "$IMG" -c \
-            'grep -n "total_reward" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/main.py'
+            'grep -n "total_reward\|np.mean(rewards)" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/main.py'
+
+          echo "--- both reset() calls are seeded ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'grep -n "\.reset(" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/main.py \
+                                /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/functions.py'
+          docker run --rm --entrypoint bash "$IMG" -c \
+            '! grep -qn "\.reset()" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/main.py \
+                                    /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/functions.py' \
+            || { echo "::error::an unseeded reset() survived"; exit 1; }
+
+          echo "--- rollout counts (ant 50, halfcheetah 25, walker 10, humanoid 10, swimmer 5, hopper 5) ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'grep -n "_ENV: ClassVar" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/functions.py'
+
+          echo "--- lunarlander rollouts default is 50 and is wired to a flag ---"
+          docker run --rm --entrypoint bash "$IMG" -c \
+            'grep -n "lunarlander_rollouts\|LUNARLANDER_ROLLOUTS" /opt/bencher/MujocoBenchmarks/src/mujocobenchmarks/main.py'
+
+          echo "--- the seeded objective is actually deterministic end to end ---"
+          docker run --rm -v "$PWD/.github/scripts:/checks:ro" --entrypoint \
+            /opt/bencher/MujocoBenchmarks/.venv/bin/python "$IMG" /checks/check_determinism.py
 
       - name: Summary
         run: |
@@ -156,6 +179,6 @@ jobs:
             echo "Pull on the cluster with:"
             echo ""
             echo '```'
-            echo "singularity pull images/bencher_uds.sif docker://${IMAGE}:${{ env.TAG }}"
+            echo "singularity pull images/bencher_${TAG}.sif docker://${IMAGE}:${{ env.TAG }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
