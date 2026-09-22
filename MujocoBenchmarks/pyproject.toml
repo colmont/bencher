@@ -28,6 +28,9 @@ start-benchmark-service = "mujocobenchmarks.main:serve"
 
 [tool.uv.sources]
 mujoco-py = { git = "https://github.com/LeoIV/mujoco-py.git" }
+# Temporary, until the config field is released: BenchmarkRequest.config does not exist
+# in bencherscaffold 0.6.x. Revert to the released version once it does.
+bencherscaffold = { git = "https://github.com/colmont/BencherScaffold.git", branch = "benchmark-config" }
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]

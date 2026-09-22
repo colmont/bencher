@@ -14,14 +14,10 @@ wheels = [
 [[package]]
 name = "bencherscaffold"
 version = "0.6.4"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/colmont/BencherScaffold.git?branch=benchmark-config#6a3d482ce1239472e68bdb554352cfd7f86d7543" }
 dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/06/d5/c178ad90a83d76f7431050658de170e00fcb58e5e3bdcf1a87a572d8162d/bencherscaffold-0.6.4.tar.gz", hash = "sha256:09b498f14005a1da14a17e4dd9152f85c82ab976a849da577cecf37f744cc2bb", size = 7537, upload-time = "2026-09-22T13:46:53.188Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/95/5ddc3911bb37a659dfbac3c1d1017ddfac4fb23151a303e2e1bc586d86e1/bencherscaffold-0.6.4-py3-none-any.whl", hash = "sha256:1221d3dce3a830a01e2496eccf8a6f94ddcf24f40946f847e11d68ef121d11e8", size = 12462, upload-time = "2026-09-22T13:46:52.038Z" },
 ]
 
 [[package]]
@@ -267,7 +263,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bencherscaffold", specifier = "~=0.6.4" },
+    { name = "bencherscaffold", git = "https://github.com/colmont/BencherScaffold.git?branch=benchmark-config" },
     { name = "box2d", specifier = ">=2.3.10,<3" },
     { name = "box2d-py", specifier = ">=2.3.8,<3" },
     { name = "cython", specifier = "<3.0" },

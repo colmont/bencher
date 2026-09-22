@@ -90,7 +90,10 @@ class MujocoServiceServicer(DualStackGRCPService):
     ) -> EvaluationResult:
         x = np.array([v.value for v in request.point.values])
         seed = request.random_seed if request.HasField('random_seed') else None
-        value = self.evaluate(request.benchmark.name, x, seed=seed)
+        num_rollouts = request.config.get('num_rollouts')
+        if num_rollouts is not None:
+            num_rollouts = int(num_rollouts)
+        value = self.evaluate(request.benchmark.name, x, seed=seed, num_rollouts=num_rollouts)
         return EvaluationResult(
             objectives=[ObjectiveValue(name="f0", value=value)],
         )
@@ -99,7 +102,8 @@ class MujocoServiceServicer(DualStackGRCPService):
             self,
             name: str,
             x: np.ndarray,
-            seed: Optional[int] = None
+            seed: Optional[int] = None,
+            num_rollouts: int | None = None,
     ) -> float:
         """Evaluate a point given in [0, 1]^d; returns a cost (negated reward).
 
@@ -120,9 +124,19 @@ class MujocoServiceServicer(DualStackGRCPService):
             # The seed must reach the rollout: functions.py spawns one child
             # seed per rollout from it. Dropping it here silently made every
             # MuJoCo benchmark non-reproducible while lunarlander looked fine.
-            return -float(spec['factory']()(x, seed=seed)[0].squeeze())
+            return -float(spec['factory']()(x, seed=seed, num_rollouts=num_rollouts)[0].squeeze())
 
-        return -self._lunarlander_reward(x.squeeze(), seed=seed)
+        if num_rollouts is None:
+            return -self._lunarlander_reward(x.squeeze(), seed=seed)
+        if seed is None:
+            rollout_seeds = [None] * num_rollouts
+        else:
+            rollout_seeds = [
+                int(child.generate_state(1)[0])
+                for child in np.random.SeedSequence(seed).spawn(num_rollouts)
+            ]
+        rewards = [self._lunarlander_reward(x.squeeze(), seed=s) for s in rollout_seeds]
+        return -float(np.mean(rewards))
 
     @staticmethod
     def _lunarlander_reward(weights: np.ndarray, seed: Optional[int] = None) -> float:
